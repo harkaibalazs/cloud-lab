@@ -1,3 +1,4 @@
 flask
 uvicorn
 asgiref
+redis
