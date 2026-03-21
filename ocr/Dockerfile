@@ -1,4 +1,4 @@
-FROM python:3.14-bookworm-slim
+FROM python:3.14-slim-bookworm
 
 RUN pip install --upgrade pip
 
