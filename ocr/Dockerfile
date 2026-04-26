@@ -30,3 +30,12 @@ RUN mkdir "$service_home" \
 RUN cd "$service_home" \
     && python setup.py build_ext --inplace -j 4 \
     && python -m pip install -e .
+
+WORKDIR /app
+
+COPY requirements.txt requirements.txt
+RUN pip install -r "requirements.txt"
+
+COPY app.py app.py
+
+CMD ["python", "app.py"]

@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  labels:
+    app: web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: web
+          image: ghcr.io/harkaibalazs/web:latest
+          ports:
+            - containerPort: 8000
+          env:
+            - name: RABBITMQ_URL
+              value: amqp://guest:guest@rabbitmq:5672/%2F
+            - name: RABBITMQ_EXCHANGE
+              value: events
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

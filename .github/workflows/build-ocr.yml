@@ -7,26 +7,41 @@ on:
     paths:
       - ocr/**
       - .github/workflows/build-ocr.yml
+    tags:
+      - ocr-v*
   workflow_dispatch:
 
 env:
   IMAGE_NAME: ocr
+  REGISTRY: ghcr.io
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Determine build type
+        id: build-type
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/ocr-v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/ocr-v}"
+            echo "tag=${VERSION}" >> "$GITHUB_OUTPUT"
+            echo "is_prod=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=dev-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+            echo "is_prod=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Log in to GHCR
         uses: docker/login-action@v4
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
@@ -34,10 +49,10 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=sha
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ steps.build-type.outputs.tag }}
+            type=raw,value=latest,enable=${{ steps.build-type.outputs.is_prod }}
 
       - name: Build and push ocr image
         uses: docker/build-push-action@v7
@@ -47,3 +62,19 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Update deployment manifest
+        if: steps.build-type.outputs.is_prod == 'true'
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.build-type.outputs.tag }}"
+          sed -i "s|image: .*${{ env.IMAGE_NAME }}.*|image: ${IMAGE}|" manifests/ocr-deploy.yaml
+
+      - name: Commit manifest update
+        if: steps.build-type.outputs.is_prod == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout main
+          git add manifests/ocr-deploy.yaml
+          git diff --cached --quiet || git commit -m "chore: update ocr image to ${{ steps.build-type.outputs.tag }}"
+          git push origin main

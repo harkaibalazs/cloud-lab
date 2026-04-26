@@ -1,4 +1,5 @@
-flask
-uvicorn
-asgiref
+starlette
+uvicorn[standard]
+python-multipart
 redis
+pika
