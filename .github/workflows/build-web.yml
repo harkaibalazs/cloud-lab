@@ -25,6 +25,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
 
       - name: Determine build type
         id: build-type
@@ -74,7 +77,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout main
           git add manifests/web-deploy.yaml
           git diff --cached --quiet || git commit -m "chore: update web image to ${{ steps.build-type.outputs.tag }}"
           git push origin main
