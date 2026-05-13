@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: web
-          image: ghcr.io/harkaibalazs/web:latest
+          image: ghcr.io/harkaibalazs/web:dev-ddbf8fd
           ports:
             - containerPort: 8000
           env:
