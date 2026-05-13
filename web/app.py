@@ -4,6 +4,7 @@ import json
 import os
 import threading
 import time
+from contextlib import asynccontextmanager
 
 import pika
 import redis
@@ -203,6 +204,12 @@ async def on_startup() -> None:
     threading.Thread(target=rabbitmq_consumer, daemon=True).start()
 
 
+@asynccontextmanager
+async def lifespan(_app):
+    await on_startup()
+    yield
+
+
 routes: list = [
     Route("/api/upload", upload_image, methods=["POST"]),
     Route("/api/images/{image_hash}/image", get_image_file),
@@ -214,4 +221,4 @@ routes: list = [
 if os.path.isdir(STATIC_DIR):
     routes.append(Mount("/", app=StaticFiles(directory=STATIC_DIR, html=True)))
 
-asgi_app = Starlette(routes=routes, on_startup=[on_startup])
+asgi_app = Starlette(routes=routes, lifespan=lifespan)
