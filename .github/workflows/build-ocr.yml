@@ -64,8 +64,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
   deploy:
     if: ${{ startsWith(github.ref, 'refs/tags/') }}
-    needs: build-and-push
-    runs_on: ubuntu-latest
+    needs: ["build_and_push"]
+    runs-on: ubuntu-latest
     steps:
       - name: Docker meta
         id: meta
