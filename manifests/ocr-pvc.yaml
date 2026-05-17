@@ -4,6 +4,7 @@ metadata:
   name: ocr-models
   namespace: cloudlab
 spec:
+  storageClassName: nfs-client
   accessModes:
     - ReadWriteOnce
   resources:
