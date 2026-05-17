@@ -21,8 +21,10 @@ spec:
           ports:
             - containerPort: 8000
           env:
+            - name: REDIS_URL
+              value: redis://redis.redis-server.svc.cluster.local:6379/0
             - name: RABBITMQ_URL
-              value: amqp://guest:guest@rabbitmq:5672/%2F
+              value: amqp://cloudlab:cloudlab@rabbitmq:5672/%2F
             - name: RABBITMQ_EXCHANGE
               value: events
           resources:
