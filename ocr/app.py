@@ -2,7 +2,6 @@ import json
 import logging
 import os
 import sys
-import tempfile
 import time
 from typing import Any
 
@@ -54,10 +53,7 @@ def fetch_image_bytes(
 
 
 def run_ocr(reader: easyocr.Reader, image_bytes: bytes) -> list[dict[str, Any]]:
-    with tempfile.NamedTemporaryFile(suffix=".img") as temp_image:
-        temp_image.write(image_bytes)
-        temp_image.flush()
-        raw_results = reader.readtext(temp_image.name)
+    raw_results = reader.readtext(image_bytes)
     return normalize_ocr_results(raw_results)
 
 
