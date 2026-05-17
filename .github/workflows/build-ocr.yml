@@ -59,6 +59,8 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           platforms: linux/amd64
+          context: ./ocr
+          file: ./ocr/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
