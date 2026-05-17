@@ -2,6 +2,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: web
+  namespace: cloudlab
   labels:
     app: web
 spec:

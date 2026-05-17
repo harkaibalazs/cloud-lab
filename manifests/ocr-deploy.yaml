@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: ocr
+  namespace: cloudlab
   labels:
     app: ocr
 spec:
@@ -19,7 +20,7 @@ spec:
           image: ghcr.io/harkaibalazs/ocr:latest
           env:
             - name: RABBITMQ_URL
-              value: amqp://guest:guest@rabbitmq:5672/%2F
+              value: amqp://cloudlab:cloudlab@rabbitmq:5672/%2F
             - name: RABBITMQ_EXCHANGE
               value: events
             - name: RABBITMQ_QUEUE
