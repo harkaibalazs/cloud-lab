@@ -16,7 +16,7 @@ A Cloud Lab egy felhőtechnológiákra épülő, mikroszolgáltatás-alapú alka
                                           │      │
                                    ┌──────▼──────▼────┐
                                    │   OCR Worker      │
-                                   │   (EasyOCR)       │
+                                   │   (Tesseract)     │
                                    └───────────────────┘
 ```
 
@@ -24,7 +24,7 @@ A Cloud Lab egy felhőtechnológiákra épülő, mikroszolgáltatás-alapú alka
 
 1. A felhasználó a React felületen kiválaszt egy képet és megad egy leírást, majd feltölti.
 2. A web backend a képet és metaadatokat Redisben tárolja, majd egy `image_uploaded` eseményt küld a RabbitMQ `events` exchange-re.
-3. Az OCR worker felveszi az üzenetet, Redisből kiolvassa a képet, lefuttatja az EasyOCR karakterfelismerést.
+3. Az OCR worker felveszi az üzenetet, Redisből kiolvassa a képet, lefuttatja a Tesseract karakterfelismerést.
 4. Az eredményeket visszaírja Redisbe, majd egy `ocr_completed` eseményt publikál RabbitMQ-n.
 5. A web backend egy háttérszálban figyeli az `ocr_completed` eseményeket és WebSocket-en keresztül azonnal továbbítja az összes csatlakozott kliensnek.
 6. A React frontend megkapja az eredményt és a képen canvas overlay segítségével megjeleníti a felismert szövegterületeket bekeretezve.
@@ -273,12 +273,13 @@ A végleges image tartalmazza a lefordított React alkalmazást a `static/` kön
 
 ### Technológiák
 
-| Technológia | Szerep                                        |
-|-------------|-----------------------------------------------|
-| EasyOCR     | Neurális hálózat alapú karakterfelismerő motor |
-| PyTorch     | Gépi tanulási keretrendszer (EasyOCR függőség) |
-| Pika        | RabbitMQ AMQP kliens                          |
-| Redis       | Kép- és eredménytárolás                        |
+| Technológia  | Szerep                                       |
+|--------------|----------------------------------------------|
+| Tesseract    | LSTM alapú karakterfelismerő motor (apt-csomag) |
+| pytesseract  | Python wrapper a `tesseract` binárishoz      |
+| Pillow       | Képdekódolás (PNG, JPEG, stb.)               |
+| Pika         | RabbitMQ AMQP kliens                         |
+| Redis        | Kép- és eredménytárolás                       |
 
 ### Könyvtárszerkezet
 
@@ -286,7 +287,7 @@ A végleges image tartalmazza a lefordított React alkalmazást a `static/` kön
 ocr/
 ├── app.py              # Worker fő fájlja
 ├── requirements.txt    # Python függőségek
-└── Dockerfile          # PyTorch + EasyOCR build
+└── Dockerfile          # python:3.12-slim + tesseract apt csomagok
 ```
 
 ### Működési elv
@@ -295,8 +296,8 @@ Az OCR worker egy hosszú életű folyamat (long-running process), amely nem szo
 
 #### Indulás (`main()`)
 
-1. Betölti az EasyOCR modellt egyszerűsített kínai (`ch_sim`) és angol (`en`) nyelvi támogatással. Ez a lépés jelentős időt vesz igénybe (modellfájlok letöltése és GPU/CPU inicializálás).
-2. Redis kapcsolatot létesít.
+1. Ellenőrzi, hogy a `tesseract` binárás elérhető a `PATH`-en, és kilogolja a verziót valamint a használt nyelveket (`TESSERACT_LANGS`, alapértelmezetten `eng+chi_sim`). Nincs modelltöltés vagy hálózati letöltés -- a nyelvi fájlokat az image már tartalmazza.
+2. Redis kapcsolatot létesít és pingel.
 3. Végtelen ciklusban csatlakozik a RabbitMQ-hoz.
 
 #### Üzenetfeldolgozás (`on_message`)
@@ -304,13 +305,13 @@ Az OCR worker egy hosszú életű folyamat (long-running process), amely nem szo
 Amikor `image_uploaded` típusú üzenet érkezik:
 
 1. **Kép kiolvasás:** A `hash` mező alapján Redisből kiolvassa a kép nyers bájtjait. Két kulcsformátumot is megpróbál: `<hash>` és `image:<hash>`.
-2. **OCR futtatás (`run_ocr`):** A kép bájtjait ideiglenes fájlba írja, majd az EasyOCR `readtext()` metódusával feldolgozza.
-3. **Eredmény normalizálás (`normalize_ocr_results`):** Az EasyOCR nyers kimenetét egységes formátumra alakítja:
+2. **OCR futtatás (`run_ocr`):** A bájtokat Pillow-val memóriában dekódolja, majd `pytesseract.image_to_data(..., output_type=Output.DICT)` hívással szóhatáros találatokat kér.
+3. **Eredmény normalizálás (`normalize_tesseract_data`):** Csak a szószintű (`level == 5`) sorokat tartja meg, eldobja az üres szövegű és negatív confidence-ű találatokat, majd egységes formátumra alakítja. A Tesseract tengellyel párhuzamos téglalapokat ad (`left, top, width, height`); ezeket a frontend-kompatibilitás érdekében 4 sarokponttá írjuk át:
    ```python
    {
-       "bbox": [[x1,y1], [x2,y2], [x3,y3], [x4,y4]],  # Befoglaló téglalap 4 sarka
-       "text": "felismert szöveg",                        # Detektált szöveg
-       "confidence": 0.95                                  # Megbízhatósági érték
+       "bbox": [[x, y], [x+w, y], [x+w, y+h], [x, y+h]],  # 4 sarok, óramutató szerint
+       "text": "felismert szöveg",                        # Detektált szó
+       "confidence": 0.95                                  # 0.0--1.0 közé normalizálva
    }
    ```
 4. **Tárolás:** Az eredményt JSON stringként visszaírja a Redis hash `ocr_results` mezőjébe.
@@ -320,27 +321,28 @@ Amikor `image_uploaded` típusú üzenet érkezik:
 
 - Egyedi üzenet feldolgozási hiba esetén `basic_nack` (requeue nélkül), így az üzenet nem kerül vissza a sorba.
 - RabbitMQ kapcsolati hiba esetén 5 másodperc múlva újracsatlakozik.
-- `prefetch_count=1` beállítás biztosítja, hogy egyszerre csak egy képet dolgoz fel (az OCR CPU/GPU-intenzív művelet).
+- `prefetch_count=1` beállítás biztosítja, hogy egyszerre csak egy képet dolgoz fel.
 
 ### Környezeti változók
 
-| Változó            | Alapértelmezés                              | Leírás                     |
-|--------------------|---------------------------------------------|----------------------------|
-| `RABBITMQ_URL`     | `amqp://guest:guest@localhost:5672/%2F`      | RabbitMQ kapcsolati URL    |
-| `RABBITMQ_EXCHANGE`| `events`                                     | Topic exchange neve        |
-| `RABBITMQ_QUEUE`   | `ocr_worker`                                 | Fogyasztói sor neve        |
-| `REDIS_URL`        | `redis://localhost:6379/0`                   | Redis kapcsolati URL       |
+| Változó              | Alapértelmezés                              | Leírás                                                            |
+|----------------------|---------------------------------------------|-------------------------------------------------------------------|
+| `RABBITMQ_URL`       | `amqp://guest:guest@localhost:5672/%2F`     | RabbitMQ kapcsolati URL                                           |
+| `RABBITMQ_EXCHANGE`  | `events`                                    | Topic exchange neve                                               |
+| `RABBITMQ_QUEUE`     | `ocr_worker`                                | Fogyasztói sor neve                                               |
+| `REDIS_URL`          | `redis://localhost:6379/0`                  | Redis kapcsolati URL                                              |
+| `TESSERACT_LANGS`    | `eng+chi_sim`                               | Tesseract `--lang` érték (`+`-szal elválasztott nyelvkódok)       |
+| `OCR_MIN_CONFIDENCE` | `0`                                         | Minimum confidence (0.0--1.0); az ennél alacsonyabb találatok kimaradnak |
 
 ### Dockerfile
 
-A PyTorch hivatalos Docker image-re (`pytorch/pytorch`) épül:
+A `python:3.12-slim` image-re épül -- nincs PyTorch, nincs CUDA, nincs modelfájl-letöltés:
 
-1. Telepíti a szükséges rendszercsomagokat (grafikus könyvtárak az OpenCV/EasyOCR-hoz).
-2. Klónozza és forrásból építi az EasyOCR-t.
-3. Telepíti a Python függőségeket (`pika`, `redis`).
-4. Az `app.py` másolásakor a konténer kész az indulásra.
+1. `apt-get install tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim` -- a felismerő motor és a nyelvi adatfájlok közvetlenül a Debian csomagokból.
+2. `pip install -r requirements.txt` -- `pytesseract`, `Pillow`, `pika`, `redis`.
+3. `app.py` másolása + `CMD ["python", "-u", "app.py"]` (a `-u` flag nélkül a stdout pufferelés elnyomná a logokat a `kubectl logs` kimenetéből).
 
-**Megjegyzés:** Az image mérete jelentős (~6-8 GB) a PyTorch és az EasyOCR modellek miatt. Első induláskor az EasyOCR automatikusan letölti a szükséges súlyfájlokat.
+**Megjegyzés:** Az image mérete jelentősen kisebb (~250 MB), mint az EasyOCR/PyTorch verzió, mert nincs benne mélytanulási stack. A Tesseract pure C/C++ implementáció, nem igényel AVX2 vagy újabb CPU-támogatást, ezért régebbi hardveren (pl. Sandy Bridge Xeon) is fut.
 
 ---
 

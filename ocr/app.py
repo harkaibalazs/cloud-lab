@@ -1,13 +1,17 @@
+import io
 import json
 import logging
 import os
+import shutil
+import subprocess
 import sys
 import time
 from typing import Any
 
-import easyocr
 import pika
+import pytesseract
 import redis
+from PIL import Image
 from pika.adapters.blocking_connection import BlockingChannel
 
 
@@ -15,6 +19,8 @@ RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/%2F"
 RABBITMQ_EXCHANGE = os.getenv("RABBITMQ_EXCHANGE", "events")
 RABBITMQ_QUEUE = os.getenv("RABBITMQ_QUEUE", "ocr_worker")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+TESSERACT_LANGS = os.getenv("TESSERACT_LANGS", "eng+chi_sim")
+MIN_CONFIDENCE = float(os.getenv("OCR_MIN_CONFIDENCE", "0"))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,22 +29,37 @@ logging.basicConfig(
 )
 log = logging.getLogger("ocr")
 
+# pytesseract returns word-level entries at level 5 (page=1, block=2, par=3, line=4, word=5)
+_WORD_LEVEL = 5
 
-def normalize_ocr_results(raw_results: list[Any]) -> list[dict[str, Any]]:
-    normalized: list[dict[str, Any]] = []
-    for item in raw_results:
-        if len(item) != 3:
+
+def normalize_tesseract_data(data: dict[str, list[Any]]) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    count = len(data.get("text", []))
+    for i in range(count):
+        if int(data["level"][i]) != _WORD_LEVEL:
             continue
-
-        bbox, text, confidence = item
-        normalized.append(
+        text = data["text"][i].strip()
+        if not text:
+            continue
+        try:
+            conf = float(data["conf"][i])
+        except (TypeError, ValueError):
+            continue
+        if conf < 0:
+            continue
+        x = float(data["left"][i])
+        y = float(data["top"][i])
+        w = float(data["width"][i])
+        h = float(data["height"][i])
+        results.append(
             {
-                "bbox": [[float(point[0]), float(point[1])] for point in bbox],
-                "text": str(text),
-                "confidence": float(confidence),
+                "bbox": [[x, y], [x + w, y], [x + w, y + h], [x, y + h]],
+                "text": text,
+                "confidence": conf / 100.0,
             }
         )
-    return normalized
+    return results
 
 
 def fetch_image_bytes(
@@ -52,9 +73,17 @@ def fetch_image_bytes(
     return None, None
 
 
-def run_ocr(reader: easyocr.Reader, image_bytes: bytes) -> list[dict[str, Any]]:
-    raw_results = reader.readtext(image_bytes)
-    return normalize_ocr_results(raw_results)
+def run_ocr(image_bytes: bytes) -> list[dict[str, Any]]:
+    image = Image.open(io.BytesIO(image_bytes))
+    if image.mode not in ("RGB", "L"):
+        image = image.convert("RGB")
+    data = pytesseract.image_to_data(
+        image, lang=TESSERACT_LANGS, output_type=pytesseract.Output.DICT
+    )
+    results = normalize_tesseract_data(data)
+    if MIN_CONFIDENCE > 0:
+        results = [r for r in results if r["confidence"] >= MIN_CONFIDENCE]
+    return results
 
 
 def publish_ocr_completed(
@@ -79,10 +108,15 @@ def publish_ocr_completed(
 
 def main() -> None:
     log.info("OCR worker starting up")
-    log.info("Loading EasyOCR model (languages: ch_sim, en)...")
-    model_start = time.monotonic()
-    reader = easyocr.Reader(["ch_sim", "en"])
-    log.info("EasyOCR model loaded in %.1fs", time.monotonic() - model_start)
+
+    if not shutil.which("tesseract"):
+        raise RuntimeError("tesseract binary not found in PATH")
+    version = (
+        subprocess.check_output(["tesseract", "--version"], stderr=subprocess.STDOUT)
+        .decode()
+        .splitlines()[0]
+    )
+    log.info("Tesseract ready: %s (languages: %s)", version, TESSERACT_LANGS)
 
     log.info("Connecting to Redis at %s", REDIS_URL)
     redis_client = redis.Redis.from_url(REDIS_URL)
@@ -120,7 +154,10 @@ def main() -> None:
                 try:
                     payload = json.loads(body.decode("utf-8"))
                     if payload.get("type") != "image_uploaded":
-                        log.info("Skipping non-image_uploaded event: %s", payload.get("type"))
+                        log.info(
+                            "Skipping non-image_uploaded event: %s",
+                            payload.get("type"),
+                        )
                         _channel.basic_ack(delivery_tag=method.delivery_tag)
                         return
 
@@ -138,14 +175,16 @@ def main() -> None:
                         return
 
                     ocr_start = time.monotonic()
-                    ocr_results = run_ocr(reader, image_bytes)
+                    ocr_results = run_ocr(image_bytes)
                     log.info(
-                        "OCR done for %s: %d regions in %.2fs",
+                        "OCR done for %s: %d words in %.2fs",
                         image_hash,
                         len(ocr_results),
                         time.monotonic() - ocr_start,
                     )
-                    redis_client.hset(redis_key, "ocr_results", json.dumps(ocr_results))
+                    redis_client.hset(
+                        redis_key, "ocr_results", json.dumps(ocr_results)
+                    )
                     publish_ocr_completed(_channel, image_hash, ocr_results)
                     log.info("Published ocr_completed for %s", image_hash)
                     _channel.basic_ack(delivery_tag=method.delivery_tag)

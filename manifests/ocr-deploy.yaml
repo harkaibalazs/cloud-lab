@@ -27,17 +27,12 @@ spec:
               value: ocr_worker
             - name: REDIS_URL
               value: redis://redis.redis-server.svc.cluster.local:6379/0
-          volumeMounts:
-            - name: easyocr-models
-              mountPath: /root/.EasyOCR
+            - name: TESSERACT_LANGS
+              value: eng+chi_sim
           resources:
             requests:
-              cpu: 250m
-              memory: 512Mi
+              cpu: 100m
+              memory: 128Mi
             limits:
               cpu: "1"
-              memory: 2Gi
-      volumes:
-        - name: easyocr-models
-          persistentVolumeClaim:
-            claimName: ocr-models
+              memory: 512Mi
