@@ -17,7 +17,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: harkaibalazs/ocr
+  IMAGE_NAME: ${{ github.repository_owner }}/ocr
   MANIFEST_PATH: manifests/ocr-deploy.yaml
 
 
@@ -30,7 +30,7 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: |
-            ${{ env.REGISTRY_NAME }}/${{ env.IMAGE_NAME }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
 
           tags: |
             type=schedule
@@ -72,7 +72,7 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: |
-            ${{ env.REGISTRY_NAME }}/${{ env.IMAGE_NAME }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
 
 
       - name: Checkout code
@@ -82,8 +82,8 @@ jobs:
 
       - name: Update Kubernetes manifest with new image
         run: |
-          echo "Updating deployment manifest image to ${{ env.REGISTRY_NAME }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}"
-          sed -i "s|image:.*|image: ${{ env.REGISTRY_NAME }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}|g" ${{ env.MANIFEST_PATH }}
+          echo "Updating deployment manifest image to ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}"
+          sed -i "s|image:.*|image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}|g" ${{ env.MANIFEST_PATH }}
 
       - name: Commit updated manifest
         run: |
