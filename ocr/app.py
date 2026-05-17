@@ -1,5 +1,7 @@
 import json
+import logging
 import os
+import sys
 import tempfile
 import time
 from typing import Any
@@ -14,6 +16,13 @@ RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/%2F"
 RABBITMQ_EXCHANGE = os.getenv("RABBITMQ_EXCHANGE", "events")
 RABBITMQ_QUEUE = os.getenv("RABBITMQ_QUEUE", "ocr_worker")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    stream=sys.stdout,
+)
+log = logging.getLogger("ocr")
 
 
 def normalize_ocr_results(raw_results: list[Any]) -> list[dict[str, Any]]:
@@ -73,12 +82,20 @@ def publish_ocr_completed(
 
 
 def main() -> None:
-    print("Loading EasyOCR model...")
+    log.info("OCR worker starting up")
+    log.info("Loading EasyOCR model (languages: ch_sim, en)...")
+    model_start = time.monotonic()
     reader = easyocr.Reader(["ch_sim", "en"])
+    log.info("EasyOCR model loaded in %.1fs", time.monotonic() - model_start)
+
+    log.info("Connecting to Redis at %s", REDIS_URL)
     redis_client = redis.Redis.from_url(REDIS_URL)
+    redis_client.ping()
+    log.info("Redis connection established")
 
     while True:
         try:
+            log.info("Connecting to RabbitMQ at %s", RABBITMQ_URL)
             rabbit_connection = pika.BlockingConnection(
                 pika.URLParameters(RABBITMQ_URL)
             )
@@ -92,6 +109,11 @@ def main() -> None:
                 queue=RABBITMQ_QUEUE,
                 routing_key="image_uploaded",
             )
+            log.info(
+                "RabbitMQ ready: exchange=%s queue=%s routing_key=image_uploaded",
+                RABBITMQ_EXCHANGE,
+                RABBITMQ_QUEUE,
+            )
 
             def on_message(
                 _channel: BlockingChannel,
@@ -102,33 +124,45 @@ def main() -> None:
                 try:
                     payload = json.loads(body.decode("utf-8"))
                     if payload.get("type") != "image_uploaded":
+                        log.info("Skipping non-image_uploaded event: %s", payload.get("type"))
                         _channel.basic_ack(delivery_tag=method.delivery_tag)
                         return
 
                     image_hash = payload.get("hash")
                     if not image_hash:
+                        log.warning("Received image_uploaded event with no hash; acking")
                         _channel.basic_ack(delivery_tag=method.delivery_tag)
                         return
 
+                    log.info("Processing image %s", image_hash)
                     redis_key, image_bytes = fetch_image_bytes(redis_client, image_hash)
                     if not redis_key or not image_bytes:
+                        log.warning("Image %s not found in Redis; acking", image_hash)
                         _channel.basic_ack(delivery_tag=method.delivery_tag)
                         return
 
+                    ocr_start = time.monotonic()
                     ocr_results = run_ocr(reader, image_bytes)
+                    log.info(
+                        "OCR done for %s: %d regions in %.2fs",
+                        image_hash,
+                        len(ocr_results),
+                        time.monotonic() - ocr_start,
+                    )
                     redis_client.hset(redis_key, "ocr_results", json.dumps(ocr_results))
                     publish_ocr_completed(_channel, image_hash, ocr_results)
+                    log.info("Published ocr_completed for %s", image_hash)
                     _channel.basic_ack(delivery_tag=method.delivery_tag)
                 except Exception as exc:  # noqa: BLE001
-                    print(f"Failed to process message: {exc}")
+                    log.exception("Failed to process message: %s", exc)
                     _channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
             channel.basic_qos(prefetch_count=1)
             channel.basic_consume(queue=RABBITMQ_QUEUE, on_message_callback=on_message)
-            print("OCR worker listening for image_uploaded events...")
+            log.info("Initialization finished, OCR worker is ready and listening")
             channel.start_consuming()
         except Exception as exc:  # noqa: BLE001
-            print(f"Connection error: {exc}. Retrying in 5 seconds...")
+            log.error("Connection error: %s. Retrying in 5 seconds...", exc)
             time.sleep(5)
 
 
