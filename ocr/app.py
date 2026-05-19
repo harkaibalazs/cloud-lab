@@ -86,23 +86,42 @@ def run_ocr(image_bytes: bytes) -> list[dict[str, Any]]:
     return results
 
 
+def publish_event(
+    channel: BlockingChannel,
+    routing_key: str,
+    payload: dict[str, Any],
+) -> None:
+    channel.basic_publish(
+        exchange=RABBITMQ_EXCHANGE,
+        routing_key=routing_key,
+        body=json.dumps(payload).encode("utf-8"),
+        properties=pika.BasicProperties(
+            content_type="application/json", delivery_mode=2
+        ),
+    )
+
+
+def publish_ocr_started(channel: BlockingChannel, image_hash: str) -> None:
+    publish_event(
+        channel,
+        "ocr_started",
+        {"type": "ocr_started", "hash": image_hash},
+    )
+
+
 def publish_ocr_completed(
     channel: BlockingChannel,
     image_hash: str,
     ocr_results: list[dict[str, Any]],
 ) -> None:
-    event = {
-        "type": "ocr_completed",
-        "hash": image_hash,
-        "ocr_results": ocr_results,
-    }
-    channel.basic_publish(
-        exchange=RABBITMQ_EXCHANGE,
-        routing_key="ocr_completed",
-        body=json.dumps(event).encode("utf-8"),
-        properties=pika.BasicProperties(
-            content_type="application/json", delivery_mode=2
-        ),
+    publish_event(
+        channel,
+        "ocr_completed",
+        {
+            "type": "ocr_completed",
+            "hash": image_hash,
+            "ocr_results": ocr_results,
+        },
     )
 
 
@@ -168,6 +187,7 @@ def main() -> None:
                         return
 
                     log.info("Processing image %s", image_hash)
+                    publish_ocr_started(_channel, image_hash)
                     redis_key, image_bytes = fetch_image_bytes(redis_client, image_hash)
                     if not redis_key or not image_bytes:
                         log.warning("Image %s not found in Redis; acking", image_hash)

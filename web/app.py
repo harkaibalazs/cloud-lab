@@ -136,6 +136,22 @@ async def get_image_metadata(request: Request) -> JSONResponse:
     return JSONResponse(decoded)
 
 
+async def rerun_ocr(request: Request) -> JSONResponse:
+    image_hash = request.path_params["image_hash"]
+    redis_key = f"image:{image_hash}"
+    if not redis_client.exists(redis_key):
+        return JSONResponse({"error": "image not found"}, status_code=404)
+    try:
+        redis_client.hset(redis_key, "ocr_results", "")
+    except redis.RedisError:
+        return JSONResponse({"error": "failed to reset state"}, status_code=503)
+    try:
+        publish_image_uploaded(image_hash)
+    except Exception:
+        return JSONResponse({"error": "failed to enqueue job"}, status_code=503)
+    return JSONResponse({"image_hash": image_hash, "status": "queued"})
+
+
 async def get_image_file(request: Request) -> Response:
     image_hash = request.path_params["image_hash"]
     image_bytes, content_type = redis_client.hmget(
@@ -180,6 +196,16 @@ def rabbitmq_consumer() -> None:
                 queue=queue_name,
                 routing_key="ocr_completed",
             )
+            channel.queue_bind(
+                exchange=RABBITMQ_EXCHANGE,
+                queue=queue_name,
+                routing_key="ocr_started",
+            )
+            channel.queue_bind(
+                exchange=RABBITMQ_EXCHANGE,
+                queue=queue_name,
+                routing_key="ocr_progress",
+            )
 
             def on_message(ch, method, _properties, body):
                 payload = json.loads(body.decode("utf-8"))
@@ -212,6 +238,7 @@ async def lifespan(_app):
 
 routes: list = [
     Route("/api/upload", upload_image, methods=["POST"]),
+    Route("/api/images/{image_hash}/rerun", rerun_ocr, methods=["POST"]),
     Route("/api/images/{image_hash}/image", get_image_file),
     Route("/api/images/{image_hash}", get_image_metadata),
     Route("/api/images", list_images),

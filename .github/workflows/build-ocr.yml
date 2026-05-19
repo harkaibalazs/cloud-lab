@@ -89,8 +89,8 @@ jobs:
 
       - name: Commit updated manifest
         run: |
-          git config user.name "gitea-runner"
-          git config user.email "gitea-runner@noreply.git.tutgroup.hu"
+          git config user.name "github_actions"
+          git config user.email "actions@github.com"
           git add ${{ env.MANIFEST_PATH }}
           git commit -m "Update image version to ${{ steps.meta.outputs.version }}" || echo "No changes to commit"
           git push

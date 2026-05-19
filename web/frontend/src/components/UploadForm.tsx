@@ -2,7 +2,7 @@ import { type FormEvent, useRef, useState } from "react";
 import type { ImageData } from "../App";
 
 interface Props {
-  onUploaded: (image: ImageData) => void;
+  onUploaded: (image: Omit<ImageData, "status">) => void;
 }
 
 export default function UploadForm({ onUploaded }: Props) {
@@ -11,6 +11,7 @@ export default function UploadForm({ onUploaded }: Props) {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
   const formRef = useRef<HTMLFormElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -49,21 +50,36 @@ export default function UploadForm({ onUploaded }: Props) {
 
   return (
     <form ref={formRef} onSubmit={handleSubmit} className="upload-form">
-      <input
-        type="file"
-        accept="image/*"
-        onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-      />
-      <input
-        type="text"
-        placeholder="Description"
-        value={description}
-        onChange={(e) => setDescription(e.target.value)}
-      />
-      <button type="submit" disabled={uploading || !file || !description}>
-        {uploading ? "Uploading..." : "Upload"}
-      </button>
-      {error && <p className="error">{error}</p>}
+      <div className="upload-row">
+        <label className="file-picker">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+          />
+          <span className="file-picker-label">
+            {file ? file.name : "Choose image…"}
+          </span>
+        </label>
+
+        <input
+          className="text-input"
+          type="text"
+          placeholder="Describe this image"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+        />
+
+        <button
+          type="submit"
+          className="btn btn-primary"
+          disabled={uploading || !file || !description}
+        >
+          {uploading ? "Uploading…" : "Upload"}
+        </button>
+      </div>
+      {error && <p className="form-error">{error}</p>}
     </form>
   );
 }

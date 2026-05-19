@@ -1,4 +1,4 @@
-name: build-web
+name: Build and push
 
 on:
   push:
@@ -8,75 +8,89 @@ on:
       - web/**
       - .github/workflows/build-web.yml
     tags:
-      - web-v*
+      - "web-v*.*.*"
   workflow_dispatch:
 
+
+permissions:
+  contents: write
+  packages: write
+
 env:
-  IMAGE_NAME: web
   REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/web
+  MANIFEST_PATH: manifests/web-deploy.yaml
+
 
 jobs:
-  build-and-push:
+  build_and_push:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      packages: write
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v6
         with:
-          ref: main
-          fetch-depth: 0
+          images: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=match,pattern=web-(v\d+\.\d+\.\d+),group=1
+            type=match,pattern=web-v(\d+\.\d+),group=1,prefix=v
+            type=match,pattern=web-v(\d+),group=1,prefix=v
+            type=ref,event=branch
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/web-v') }}
+            type=raw,value=dev,enable={{is_default_branch}}
 
-      - name: Determine build type
-        id: build-type
-        run: |
-          if [[ "${{ github.ref }}" == refs/tags/web-v* ]]; then
-            VERSION="${GITHUB_REF#refs/tags/web-v}"
-            echo "tag=${VERSION}" >> "$GITHUB_OUTPUT"
-            echo "is_prod=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=dev-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-            echo "is_prod=false" >> "$GITHUB_OUTPUT"
-          fi
+      - name: Checkout code
+        uses: actions/checkout@v6
 
-      - name: Log in to GHCR
+      - name: Login to Container Registry
         uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract image metadata
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=${{ steps.build-type.outputs.tag }}
-            type=raw,value=latest,enable=${{ steps.build-type.outputs.is_prod }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
 
-      - name: Build and push web image
+
+      - name: Build and push
         uses: docker/build-push-action@v7
         with:
+          platforms: linux/amd64
           context: ./web
           file: ./web/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+  deploy:
+    if: ${{ startsWith(github.ref, 'refs/tags/') }}
+    needs: ["build_and_push"]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=match,pattern=web-(v\d+\.\d+\.\d+),group=1
 
-      - name: Update deployment manifest
-        if: steps.build-type.outputs.is_prod == 'true'
-        run: |
-          IMAGE="${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.build-type.outputs.tag }}"
-          sed -i "s|image: .*${{ env.IMAGE_NAME }}.*|image: ${IMAGE}|" manifests/web-deploy.yaml
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
 
-      - name: Commit manifest update
-        if: steps.build-type.outputs.is_prod == 'true'
+      - name: Update Kubernetes manifest with new image
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add manifests/web-deploy.yaml
-          git diff --cached --quiet || git commit -m "chore: update web image to ${{ steps.build-type.outputs.tag }}"
-          git push origin main
+          echo "Updating deployment manifest image to ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}"
+          sed -i "s|image:.*|image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}|g" ${{ env.MANIFEST_PATH }}
+
+      - name: Commit updated manifest
+        run: |
+          git config user.name "github_actions"
+          git config user.email "actions@github.com"
+          git add ${{ env.MANIFEST_PATH }}
+          git commit -m "Update image version to ${{ steps.meta.outputs.version }}" || echo "No changes to commit"
+          git push
