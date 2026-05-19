@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: ocr
-          image: ghcr.io/harkaibalazs/ocr:v0.1.3
+          image: ghcr.io/harkaibalazs/ocr:v0.1.4
           env:
             - name: RABBITMQ_URL
               value: amqp://cloudlab:cloudlab@rabbitmq.internal.svc.cluster.local:5672/%2F
