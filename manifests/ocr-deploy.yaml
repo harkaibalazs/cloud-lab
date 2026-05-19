@@ -28,7 +28,7 @@ spec:
             - name: REDIS_URL
               value: redis://redis.redis-server.svc.cluster.local:6379/0
             - name: TESSERACT_LANGS
-              value: eng+chi_sim
+              value: hun+eng
           resources:
             requests:
               cpu: 100m
