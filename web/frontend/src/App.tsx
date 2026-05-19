@@ -59,6 +59,8 @@ export default function App() {
                 : img,
             ),
           );
+        } else if (data.type === "image_deleted") {
+          setImages((prev) => prev.filter((img) => img.image_hash !== data.hash));
         } else if (data.type === "ocr_completed") {
           setImages((prev) =>
             prev.map((img) =>
@@ -97,6 +99,11 @@ export default function App() {
     });
   };
 
+  const handleDelete = async (image_hash: string) => {
+    setImages((prev) => prev.filter((img) => img.image_hash !== image_hash));
+    await fetch(`/api/images/${image_hash}`, { method: "DELETE" });
+  };
+
   const handleRerun = async (image_hash: string) => {
     setImages((prev) =>
       prev.map((img) =>
@@ -113,7 +120,7 @@ export default function App() {
       <header className="app-header">
         <div className="brand">
           <span className="brand-mark" aria-hidden="true" />
-          <h1>OCR Studio</h1>
+          <h1>Cloud OCR</h1>
         </div>
         <p className="subtitle">
           Upload an image to extract text. Results stream in as soon as the
@@ -134,6 +141,7 @@ export default function App() {
               key={img.image_hash}
               image={img}
               onRerun={handleRerun}
+              onDelete={handleDelete}
             />
           ))}
         </div>

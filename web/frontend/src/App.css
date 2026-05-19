@@ -192,6 +192,18 @@ h1 {
   color: var(--accent-hover);
 }
 
+.btn-danger {
+  background: var(--surface);
+  color: var(--danger);
+  border-color: var(--border-strong);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: #fee2e2;
+  border-color: var(--danger);
+  color: #991b1b;
+}
+
 .btn-ghost {
   background: transparent;
   color: var(--text-muted);

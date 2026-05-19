@@ -17,6 +17,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/%2F")
 RABBITMQ_EXCHANGE = os.getenv("RABBITMQ_EXCHANGE", "events")
+OCR_QUEUE = os.getenv("OCR_QUEUE", "ocr_worker")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
@@ -29,22 +30,41 @@ _loop: asyncio.AbstractEventLoop | None = None
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
-def publish_image_uploaded(image_hash: str) -> None:
-    event = {"type": "image_uploaded", "hash": image_hash}
-    connection = pika.BlockingConnection(pika.URLParameters(RABBITMQ_URL))
-    channel = connection.channel()
+def ensure_ocr_queue(channel) -> None:
+    """Declare exchange + the durable ocr_worker queue and bind it.
+
+    Done by web (the publisher) so messages aren't dropped when the worker
+    isn't connected. Idempotent — safe to call on every publish.
+    """
     channel.exchange_declare(
         exchange=RABBITMQ_EXCHANGE, exchange_type="topic", durable=True
     )
-    channel.basic_publish(
+    channel.queue_declare(queue=OCR_QUEUE, durable=True)
+    channel.queue_bind(
         exchange=RABBITMQ_EXCHANGE,
+        queue=OCR_QUEUE,
         routing_key="image_uploaded",
-        body=json.dumps(event).encode("utf-8"),
-        properties=pika.BasicProperties(
-            content_type="application/json", delivery_mode=2
-        ),
     )
-    connection.close()
+
+
+def publish_image_uploaded(image_hash: str) -> None:
+    event = {"type": "image_uploaded", "hash": image_hash}
+    connection = pika.BlockingConnection(pika.URLParameters(RABBITMQ_URL))
+    try:
+        channel = connection.channel()
+        ensure_ocr_queue(channel)
+        channel.confirm_delivery()
+        channel.basic_publish(
+            exchange=RABBITMQ_EXCHANGE,
+            routing_key="image_uploaded",
+            body=json.dumps(event).encode("utf-8"),
+            properties=pika.BasicProperties(
+                content_type="application/json", delivery_mode=2
+            ),
+            mandatory=True,
+        )
+    finally:
+        connection.close()
 
 
 async def broadcast(event: dict) -> None:
@@ -136,6 +156,19 @@ async def get_image_metadata(request: Request) -> JSONResponse:
     return JSONResponse(decoded)
 
 
+async def delete_image(request: Request) -> JSONResponse:
+    image_hash = request.path_params["image_hash"]
+    redis_key = f"image:{image_hash}"
+    try:
+        deleted = redis_client.delete(redis_key)
+    except redis.RedisError:
+        return JSONResponse({"error": "failed to delete"}, status_code=503)
+    if not deleted:
+        return JSONResponse({"error": "image not found"}, status_code=404)
+    await broadcast({"type": "image_deleted", "hash": image_hash})
+    return JSONResponse({"image_hash": image_hash, "status": "deleted"})
+
+
 async def rerun_ocr(request: Request) -> JSONResponse:
     image_hash = request.path_params["image_hash"]
     redis_key = f"image:{image_hash}"
@@ -224,9 +257,22 @@ def rabbitmq_consumer() -> None:
 # ── App setup ────────────────────────────────────────────────────────────────
 
 
+def ensure_queue_on_startup() -> None:
+    try:
+        connection = pika.BlockingConnection(pika.URLParameters(RABBITMQ_URL))
+        try:
+            ensure_ocr_queue(connection.channel())
+            print(f"Web: ensured queue '{OCR_QUEUE}' is declared and bound")
+        finally:
+            connection.close()
+    except Exception as exc:
+        print(f"Web: could not pre-declare queue: {exc}")
+
+
 async def on_startup() -> None:
     global _loop
     _loop = asyncio.get_running_loop()
+    threading.Thread(target=ensure_queue_on_startup, daemon=True).start()
     threading.Thread(target=rabbitmq_consumer, daemon=True).start()
 
 
@@ -240,7 +286,16 @@ routes: list = [
     Route("/api/upload", upload_image, methods=["POST"]),
     Route("/api/images/{image_hash}/rerun", rerun_ocr, methods=["POST"]),
     Route("/api/images/{image_hash}/image", get_image_file),
-    Route("/api/images/{image_hash}", get_image_metadata),
+    Route(
+        "/api/images/{image_hash}",
+        get_image_metadata,
+        methods=["GET"],
+    ),
+    Route(
+        "/api/images/{image_hash}",
+        delete_image,
+        methods=["DELETE"],
+    ),
     Route("/api/images", list_images),
     WebSocketRoute("/ws", websocket_endpoint),
 ]

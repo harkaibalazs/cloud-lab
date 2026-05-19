@@ -4,6 +4,7 @@ import type { ImageData, OcrResult } from "../App";
 interface Props {
   image: ImageData;
   onRerun: (image_hash: string) => void;
+  onDelete: (image_hash: string) => void;
 }
 
 function StatusPill({ status }: { status: ImageData["status"] }) {
@@ -22,7 +23,7 @@ function joinText(results: OcrResult[]): string {
   return results.map((r) => r.text).join(" ");
 }
 
-export default function ImageCard({ image, onRerun }: Props) {
+export default function ImageCard({ image, onRerun, onDelete }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const [copied, setCopied] = useState(false);
@@ -47,9 +48,12 @@ export default function ImageCard({ image, onRerun }: Props) {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       if (!results || results.length === 0) return;
 
-      ctx.strokeStyle = "rgba(37, 99, 235, 0.9)";
-      ctx.fillStyle = "rgba(37, 99, 235, 0.12)";
-      ctx.lineWidth = Math.max(2, canvas.width / 800);
+      const scale = canvas.width / 800;
+      const fontSize = Math.max(14, Math.round(16 * scale));
+      ctx.strokeStyle = "#00ff00";
+      ctx.lineWidth = Math.max(2, scale * 2);
+      ctx.font = `${fontSize}px sans-serif`;
+      ctx.textBaseline = "alphabetic";
 
       for (const r of results) {
         const b = r.bbox;
@@ -57,8 +61,15 @@ export default function ImageCard({ image, onRerun }: Props) {
         ctx.moveTo(b[0][0], b[0][1]);
         for (let i = 1; i < b.length; i++) ctx.lineTo(b[i][0], b[i][1]);
         ctx.closePath();
-        ctx.fill();
         ctx.stroke();
+
+        const tw = ctx.measureText(r.text).width;
+        const padX = 4;
+        const labelH = fontSize + 6;
+        ctx.fillStyle = "rgba(0,0,0,0.7)";
+        ctx.fillRect(b[0][0], b[0][1] - labelH, tw + padX * 2, labelH);
+        ctx.fillStyle = "#00ff00";
+        ctx.fillText(r.text, b[0][0] + padX, b[0][1] - 4);
       }
     };
 
@@ -76,6 +87,8 @@ export default function ImageCard({ image, onRerun }: Props) {
       /* ignore */
     }
   };
+
+  const cancelLabel = image.status === "queued" ? "Cancel" : "Delete";
 
   return (
     <article className="image-card">
@@ -126,6 +139,13 @@ export default function ImageCard({ image, onRerun }: Props) {
                 disabled={inFlight}
               >
                 Re-run OCR
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                onClick={() => onDelete(image.image_hash)}
+              >
+                {cancelLabel}
               </button>
             </div>
           </div>
